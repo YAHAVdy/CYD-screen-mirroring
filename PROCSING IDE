@@ -1,0 +1,282 @@
+import processing.net.*;
+import java.awt.Robot;
+import java.awt.Rectangle;
+import java.awt.Toolkit;
+import java.awt.image.BufferedImage;
+
+Client client;
+Robot robot;
+
+
+String esp32IP = "192.168.1.100";  
+int esp32Port = 8888;
+
+final int IMG_W = 320;//CYD H
+final int IMG_H = 480;//CYD W
+
+PImage lastSent;
+int framesSent = 0;
+float sendFPS = 0;
+float lastSendTime = 0;
+boolean connected = false;
+
+int targetFPS = 2;
+
+void setup() {
+  size(900, 550);
+  surface.setTitle("ESP32 WiFi Screen Mirror - 320x480");
+  
+  try {
+    robot = new Robot();
+    println("✓ Screen capture ready");
+  } catch (Exception e) {
+    println("ERROR: " + e.getMessage());
+    exit();
+    return;
+  }
+  
+  
+  println("\n=== Connecting to ESP32 ===");
+  println("IP: " + esp32IP);
+  println("Port: " + esp32Port);
+  
+  try {
+    client = new Client(this, esp32IP, esp32Port);
+    connected = true;
+    println("✓ Connected to ESP32 via WiFi!");
+  } catch (Exception e) {
+    println("ERROR: Cannot connect to ESP32");
+    println(e.getMessage());
+    println("\nMake sure:");
+    println("1. ESP32 is powered on");
+    println("2. WiFi is connected");
+    println("3. IP address is correct");
+    exit();
+    return;
+  }
+  
+  lastSent = createImage(IMG_W, IMG_H, RGB);
+  
+  frameRate(targetFPS);
+  
+  println("\n=== WiFi Screen Mirror ===");
+  println("Resolution: 320×480");
+  println("Target FPS: " + targetFPS);
+  println("Press Q to quit");
+  println("========================\n");
+}
+
+void draw() {
+  background(20);
+  
+  if (!connected || client == null || !client.active()) {
+    fill(255, 0, 0);
+    textAlign(CENTER);
+    textSize(24);
+    text("WiFi Disconnected!", width/2, height/2);
+    textSize(16);
+    text("Check ESP32 connection", width/2, height/2 + 40);
+    return;
+  }
+  
+  BufferedImage screenCapture = captureScreen();
+  
+  if (screenCapture != null) {
+    PImage screen = new PImage(screenCapture);
+    
+    stroke(100);
+    strokeWeight(2);
+    noFill();
+    rect(9, 9, 642, 482);
+    
+    image(screen, 10, 10, 640, 480);
+    
+    sendImageToESP32(screen);
+    
+    framesSent++;
+  }
+  
+  drawInfoPanel();
+}
+
+BufferedImage captureScreen() {
+  try {
+    Rectangle screenRect = new Rectangle(Toolkit.getDefaultToolkit().getScreenSize());
+    return robot.createScreenCapture(screenRect);
+  } catch (Exception e) {
+    return null;
+  }
+}
+
+void sendImageToESP32(PImage img) {
+  if (!connected || client == null || !client.active()) return;
+  
+  float startTime = millis();
+  
+  PImage small = img.get();
+  small.resize(IMG_W, IMG_H);
+  small.loadPixels();
+  
+  lastSent.loadPixels();
+  arrayCopy(small.pixels, lastSent.pixels);
+  lastSent.updatePixels();
+  
+  try {
+    // Header
+    client.write(0xFF);
+    client.write(0xD8);
+    
+    // Pixels
+    for (int i = 0; i < small.pixels.length; i++) {
+      int pixel = small.pixels[i];
+      
+      int r = (pixel >> 16) & 0xFF;
+      int g = (pixel >> 8) & 0xFF;
+      int b = pixel & 0xFF;
+      
+      int r5 = (r >> 3) & 0x1F;
+      int g6 = (g >> 2) & 0x3F;
+      int b5 = (b >> 3) & 0x1F;
+      
+      int rgb565 = (r5 << 11) | (g6 << 5) | b5;
+      
+      client.write((rgb565 >> 8) & 0xFF);
+      client.write(rgb565 & 0xFF);
+    }
+    
+    float elapsed = millis() - startTime;
+    sendFPS = 1000.0 / max(elapsed, 1);
+    lastSendTime = elapsed;
+    
+  } catch (Exception e) {
+    println("Send error: " + e.getMessage());
+    connected = false;
+  }
+}
+
+void drawInfoPanel() {
+  fill(40);
+  noStroke();
+  rect(660, 10, 230, 530);
+  
+  fill(100, 200, 255);
+  textSize(18);
+  textAlign(LEFT);
+  text("WiFi Mirror", 670, 35);
+  
+  stroke(100);
+  line(670, 45, 880, 45);
+  
+  fill(255);
+  textSize(13);
+  int y = 70;
+  
+  text("Connection:", 670, y);
+  fill(connected ? color(0, 255, 0) : color(255, 0, 0));
+  text(connected ? "WiFi ✓" : "Offline ✗", 770, y);
+  y += 25;
+  
+  fill(255);
+  text("ESP32 IP:", 670, y);
+  fill(200);
+  textSize(11);
+  text(esp32IP, 770, y);
+  textSize(13);
+  y += 20;
+  
+  fill(255);
+  text("Port:", 670, y);
+  fill(200);
+  text(esp32Port, 770, y);
+  y += 30;
+  
+  stroke(100);
+  line(670, y - 10, 880, y - 10);
+  
+  fill(255);
+  text("Resolution:", 670, y);
+  fill(0, 255, 0);
+  text("320×480", 770, y);
+  y += 25;
+  
+  fill(255);
+  text("Target FPS:", 670, y);
+  fill(255, 255, 0);
+  text(targetFPS, 770, y);
+  y += 25;
+  
+  fill(255);
+  text("Actual FPS:", 670, y);
+  fill(sendFPS >= targetFPS * 0.8 ? color(0, 255, 0) : color(255, 150, 0));
+  text(nf(sendFPS, 1, 2), 770, y);
+  y += 25;
+  
+  fill(255);
+  text("Send Time:", 670, y);
+  fill(200);
+  text(nf(lastSendTime, 1, 0) + " ms", 770, y);
+  y += 25;
+  
+  fill(255);
+  text("Frames:", 670, y);
+  fill(200);
+  text(framesSent, 770, y);
+  y += 35;
+  
+  stroke(100);
+  line(670, y - 15, 880, y - 15);
+  
+  // Controls
+  fill(150);
+  textSize(11);
+  text("Controls:", 670, y);
+  y += 15;
+  text("+ / -  Adjust FPS", 675, y);
+  y += 15;
+  text("Q      Quit", 675, y);
+  y += 30;
+  
+  // Preview
+  stroke(100);
+  strokeWeight(2);
+  int previewW = 140;
+  int previewH = 210;
+  
+  rect(669, y - 5, previewW + 12, previewH + 32);
+  
+  fill(255);
+  textSize(12);
+  text("Sent via WiFi:", 670, y + 10);
+  
+  image(lastSent, 676, y + 15, previewW, previewH);
+  
+  // נורית WiFi
+  int pulse = framesSent % 20;
+  fill(pulse < 10 ? color(100, 200, 255) : color(50, 100, 150));
+  noStroke();
+  circle(880, 25, 12);
+}
+
+void keyPressed() {
+  if (key == 'q' || key == 'Q') {
+    println("\n=== Closing WiFi connection ===");
+    if (client != null) client.stop();
+    exit();
+  }
+  
+  if (key == '+' || key == '=') {
+    if (targetFPS < 10) {
+      targetFPS++;
+      frameRate(targetFPS);
+      println("FPS: " + targetFPS);
+    }
+  }
+  
+  if (key == '-' || key == '_') {
+    if (targetFPS > 1) {
+      targetFPS--;
+      frameRate(targetFPS);
+      println("FPS: " + targetFPS);
+    }
+  }
+}
