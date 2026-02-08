@@ -1,0 +1,142 @@
+#include <TFT_eSPI.h>
+#include <WiFi.h>
+
+TFT_eSPI tft = TFT_eSPI();
+
+const char* ssid = "Hadad1";      // ⬅️ WIFI NAME
+const char* password = "e5e5e5e5";   // ⬅️PASSWORD
+
+const int IMG_W = 480;//CYD W
+const int IMG_H = 320;//CYD H
+
+// Streaming buffer
+const int ROWS_PER_CHUNK = 10;
+uint16_t lineBuffer[IMG_W * ROWS_PER_CHUNK];
+
+WiFiServer server(8888);  
+WiFiClient client;
+
+int framesReceived = 0;
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+
+  tft.init();
+  tft.setRotation(1);
+  tft.setSwapBytes(true);
+  tft.fillScreen(TFT_BLACK);
+
+  tft.setTextColor(TFT_YELLOW);
+  tft.setTextSize(2);
+  tft.setCursor(10, 100);
+  tft.println("Connecting WiFi...");
+  
+  WiFi.begin(ssid, password);
+  
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("\n✓ WiFi Connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_GREEN);
+  tft.setTextSize(2);
+  tft.setCursor(10, 100);
+  tft.println("WiFi Connected!");
+  tft.setCursor(10, 130);
+  tft.print("IP: ");
+  tft.println(WiFi.localIP());
+  tft.setCursor(10, 160);
+  tft.println("Port: 8888");
+  tft.setCursor(10, 200);
+  tft.println("Waiting for");
+  tft.setCursor(10, 230);
+  tft.println("connection...");
+
+  server.begin();
+  
+  Serial.println("\n=== ESP32 WiFi Server ===");
+  Serial.print("Resolution: ");
+  Serial.print(IMG_W);
+  Serial.print("x");
+  Serial.println(IMG_H);
+  Serial.print("Listening on: ");
+  Serial.print(WiFi.localIP());
+  Serial.println(":8888");
+  Serial.println("========================\n");
+}
+
+void loop() {
+  if (!client.connected()) {
+    client = server.available();
+    if (client) {
+      Serial.println("✓ Client connected!");
+      
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_GREEN);
+      tft.setTextSize(2);
+      tft.setCursor(10, 200);
+      tft.println("Client");
+      tft.setCursor(10, 230);
+      tft.println("Connected!");
+      delay(1000);
+    }
+    return;
+  }
+
+  
+  if (client.available() >= 2) {
+    uint8_t b1 = client.read();
+    
+    if (b1 == 0xFF && client.peek() == 0xD8) {
+      client.read();
+      
+      unsigned long startTime = millis();
+      
+      for (int chunk = 0; chunk < IMG_H / ROWS_PER_CHUNK; chunk++) {
+        int currentY = chunk * ROWS_PER_CHUNK;
+        
+        for (int i = 0; i < IMG_W * ROWS_PER_CHUNK; i++) {
+          unsigned long waitStart = millis();
+          while (client.available() < 2) {
+            if (millis() - waitStart > 5000) {
+              Serial.println("ERROR: Timeout!");
+              return;
+            }
+            if (!client.connected()) {
+              Serial.println("Client disconnected!");
+              return;
+            }
+          }
+          
+          uint8_t hi = client.read();
+          uint8_t lo = client.read();
+          lineBuffer[i] = (hi << 8) | lo;
+        }
+        
+        tft.pushImage(0, currentY, IMG_W, ROWS_PER_CHUNK, lineBuffer);
+      }
+      
+      unsigned long totalTime = millis() - startTime;
+      framesReceived++;
+      
+      Serial.print("✓ Frame #");
+      Serial.print(framesReceived);
+      Serial.print(" | ");
+      Serial.print(totalTime);
+      Serial.println("ms");
+      
+      tft.setTextColor(TFT_GREEN, TFT_BLACK);
+      tft.setTextSize(1);
+      tft.setCursor(5, 5);
+      tft.print("WiFi Frame: ");
+      tft.print(framesReceived);
+    }
+  }
+}
